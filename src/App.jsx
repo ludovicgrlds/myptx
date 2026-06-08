@@ -13,6 +13,7 @@ export default function App() {
   const [page, setPage] = useState('dashboard')
   const [selectedVehicle, setSelectedVehicle] = useState(null)
   const [selectedControl, setSelectedControl] = useState(null)
+  const [navParams, setNavParams] = useState(null)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -36,16 +37,17 @@ export default function App() {
 
   if (!session) return <LoginPage onLogin={setSession} />
 
-  const nav = (p, vehicle = null, control = null) => {
+  const nav = (p, vehicle = null, params = null) => {
     setPage(p)
     if (vehicle !== null) setSelectedVehicle(vehicle)
-    if (control !== null) setSelectedControl(control)
+    setNavParams(params)
+    if (p === 'history') setSelectedControl(params)
   }
 
   if (page === 'dashboard') return <Dashboard session={session} nav={nav} />
   if (page === 'vehicles') return <VehicleList session={session} nav={nav} />
   if (page === 'vehicle-detail') return <VehicleDetail session={session} vehicle={selectedVehicle} nav={nav} />
-  if (page === 'checklist') return <ChecklistPage session={session} vehicle={selectedVehicle} nav={nav} />
+  if (page === 'checklist') return <ChecklistPage session={session} vehicle={selectedVehicle} params={navParams} nav={nav} />
   if (page === 'history') return <HistoryPage session={session} vehicle={selectedVehicle} control={selectedControl} nav={nav} />
 
   return <Dashboard session={session} nav={nav} />

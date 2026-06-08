@@ -1,55 +1,87 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { VSAV_SECTIONS } from '../lib/vsav_checklist'
 
-const buildSections = () => VSAV_SECTIONS.map(s => ({
-  ...s,
-  items: s.items.map(name => ({ name, status: null })),
-  comment: ''
-}))
-
-export default function ChecklistPage({ session, vehicle, nav }) {
-  const [sections, setSections] = useState(buildSections)
+export default function ChecklistPage({ session, vehicle, params, nav }) {
+  const sectionDef = VSAV_SECTIONS.find(s => s.id === params?.sectionId) || VSAV_SECTIONS[0]
+  const [items, setItems] = useState(sectionDef.items.map(name => ({ name, status: null })))
+  const [comment, setComment] = useState('')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [existing, setExisting] = useState(null)
+  const [locked, setLocked] = useState(false)
 
-  const setItemStatus = (sIdx, iIdx, status) => {
-    setSections(prev => prev.map((s, si) =>
-      si !== sIdx ? s : {
-        ...s,
-        items: s.items.map((item, ii) => ii !== iIdx ? item : { ...item, status })
+  const getWeekDate = () => {
+    const d = new Date()
+    const day = d.getDay()
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1)
+    d.setDate(diff)
+    return d.toISOString().split('T')[0]
+  }
+
+  useEffect(() => {
+    const fetchExisting = async () => {
+      const weekDate = getWeekDate()
+      const { data } = await supabase
+        .from('section_controls')
+        .select('*, profiles(full_name)')
+        .eq('vehicle_id', vehicle.id)
+        .eq('section_id', sectionDef.id)
+        .eq('week_date', weekDate)
+        .single()
+      if (data) {
+        setExisting(data)
+        setItems(data.items)
+        setComment(data.comment || '')
+        if (data.agent_id !== session.user.id) setLocked(true)
       }
-    ))
+      setLoading(false)
+    }
+    fetchExisting()
+  }, [])
+
+  const setItemStatus = (idx, status) => {
+    if (locked) return
+    setItems(prev => prev.map((item, i) => i !== idx ? item : { ...item, status }))
   }
 
-  const setComment = (sIdx, val) => {
-    setSections(prev => prev.map((s, si) => si !== sIdx ? s : { ...s, comment: val }))
-  }
-
-  const allItemsFilled = sections.every(s => s.items.every(i => i.status !== null))
-  const allCommentsFilled = sections.every(s => s.comment.trim().length > 0)
-  const canSave = allItemsFilled && allCommentsFilled
-  const hasKo = sections.some(s => s.items.some(i => i.status === 'ko'))
-
-  const progress = sections.reduce((acc, s) => acc + s.items.filter(i => i.status).length, 0)
-  const total = sections.reduce((acc, s) => acc + s.items.length, 0)
+  const allFilled = items.every(i => i.status !== null)
+  const commentOk = comment.trim().length > 0
+  const canSave = allFilled && commentOk && !locked
+  const hasKo = items.some(i => i.status === 'ko')
+  const progress = items.filter(i => i.status).length
 
   const handleSave = async () => {
     if (!canSave) return
     setSaving(true)
-    const { error } = await supabase.from('controls').insert([{
+    const weekDate = getWeekDate()
+    const payload = {
       vehicle_id: vehicle.id,
       agent_id: session.user.id,
+      section_id: sectionDef.id,
+      section_title: sectionDef.title,
+      items,
+      comment,
       has_ko: hasKo,
-      sections: sections.map(s => ({
-        id: s.id, title: s.title,
-        items: s.items,
-        comment: s.comment
-      }))
-    }])
+      week_date: weekDate,
+      updated_at: new Date().toISOString()
+    }
+    if (existing) {
+      await supabase.from('section_controls').update(payload).eq('id', existing.id)
+    } else {
+      await supabase.from('section_controls').insert([payload])
+    }
     setSaving(false)
-    if (!error) { setSaved(true); setTimeout(() => nav('vehicle-detail', vehicle), 1500) }
+    setSaved(true)
+    setTimeout(() => nav('vehicle-detail', vehicle), 1200)
   }
+
+  if (loading) return (
+    <div className="page" style={{ alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ color: 'var(--gray-400)' }}>Chargement...</div>
+    </div>
+  )
 
   if (saved) return (
     <div className="page" style={{ alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24 }}>
@@ -57,7 +89,7 @@ export default function ChecklistPage({ session, vehicle, nav }) {
         <i className="ti ti-check" style={{ fontSize: 36, color: 'var(--green)' }} />
       </div>
       <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: 18, fontWeight: 600 }}>Vérification enregistrée</div>
+        <div style={{ fontSize: 18, fontWeight: 600 }}>Section enregistrée</div>
         <div style={{ fontSize: 13, color: 'var(--gray-400)', marginTop: 6 }}>
           {hasKo ? 'Des anomalies ont été signalées' : 'Tout est en ordre'}
         </div>
@@ -68,98 +100,84 @@ export default function ChecklistPage({ session, vehicle, nav }) {
   return (
     <div className="page">
       <div className="top-bar">
-        <div>
-          <div className="top-bar-title">Vérification — {vehicle.name}</div>
-          <div className="top-bar-sub">{progress}/{total} points · {sections.filter(s => s.comment.trim()).length}/{sections.length} remarques</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="top-bar-title" style={{ fontSize: 14 }}>{sectionDef.title}</div>
+          <div className="top-bar-sub">{vehicle.name} · {progress}/{items.length} points</div>
         </div>
-        <button className="top-bar-icon" onClick={() => nav('vehicle-detail', vehicle)} aria-label="Fermer">
+        <button className="top-bar-icon" onClick={() => nav('vehicle-detail', vehicle)} aria-label="Retour">
           <i className="ti ti-x" style={{ fontSize: 18 }} />
         </button>
       </div>
 
       <div style={{ height: 4, background: 'var(--gray-200)', flexShrink: 0 }}>
-        <div style={{ height: '100%', background: 'var(--orange)', width: `${(progress/total)*100}%`, transition: 'width 0.3s' }} />
+        <div style={{ height: '100%', background: 'var(--orange)', width: `${(progress/items.length)*100}%`, transition: 'width 0.3s' }} />
       </div>
 
-      <div className="scroll-body" style={{ gap: 16 }}>
-        {sections.map((section, sIdx) => {
-          const sectionComplete = section.items.every(i => i.status !== null)
-          const commentMissing = sectionComplete && !section.comment.trim()
-          return (
-            <div key={section.id} className="card" style={{ padding: 0, overflow: 'hidden' }}>
-              <div style={{
-                background: commentMissing ? 'var(--red-bg)' : sectionComplete ? 'var(--green-bg)' : 'var(--orange-bg)',
-                padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10,
-                borderBottom: `1px solid ${commentMissing ? '#F5C6C2' : sectionComplete ? '#C0DD97' : 'var(--orange-border)'}`
-              }}>
-                <i className={`ti ${section.icon}`} style={{ fontSize: 18, color: commentMissing ? 'var(--red)' : sectionComplete ? 'var(--green)' : 'var(--orange)' }} />
-                <span style={{ fontSize: 13, fontWeight: 600, color: commentMissing ? 'var(--red)' : sectionComplete ? 'var(--green)' : 'var(--orange-dark)', flex: 1 }}>
-                  {section.title}
-                </span>
-                {sectionComplete && !section.comment.trim() && (
-                  <span style={{ fontSize: 11, color: 'var(--red)', fontWeight: 600 }}>Remarque requise</span>
-                )}
-                {sectionComplete && section.comment.trim() && (
-                  <i className="ti ti-circle-check" style={{ fontSize: 18, color: 'var(--green)' }} />
-                )}
-              </div>
+      {locked && (
+        <div style={{ background: 'var(--amber-bg)', borderBottom: '1px solid var(--orange-border)', padding: '10px 16px', display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: 'var(--amber)', fontWeight: 500 }}>
+          <i className="ti ti-lock" style={{ fontSize: 16 }} />
+          Section validée par {existing?.profiles?.full_name || 'un autre agent'} — lecture seule
+        </div>
+      )}
 
-              {section.items.map((item, iIdx) => (
-                <div key={iIdx} style={{ padding: '11px 16px', display: 'flex', alignItems: 'center', gap: 10, borderBottom: '1px solid var(--gray-100)' }}>
-                  <span style={{ flex: 1, fontSize: 13, lineHeight: 1.4 }}>{item.name}</span>
-                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                    <button onClick={() => setItemStatus(sIdx, iIdx, 'ok')} style={{
-                      padding: '7px 14px', borderRadius: 8, fontSize: 13, fontWeight: 600, border: 'none',
-                      minHeight: 38, minWidth: 52,
-                      background: item.status === 'ok' ? 'var(--green)' : 'var(--green-bg)',
-                      color: item.status === 'ok' ? 'white' : 'var(--green)'
-                    }}>OK</button>
-                    <button onClick={() => setItemStatus(sIdx, iIdx, 'ko')} style={{
-                      padding: '7px 14px', borderRadius: 8, fontSize: 13, fontWeight: 600, border: 'none',
-                      minHeight: 38, minWidth: 52,
-                      background: item.status === 'ko' ? 'var(--red)' : 'var(--red-bg)',
-                      color: item.status === 'ko' ? 'white' : 'var(--red)'
-                    }}>KO</button>
-                  </div>
-                </div>
-              ))}
-
-              <div style={{ padding: '10px 16px', background: 'var(--gray-50)', borderTop: '1px solid var(--gray-100)' }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: section.comment.trim() ? 'var(--green)' : 'var(--red)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  {section.comment.trim() ? '✓ Remarque renseignée' : 'Remarque obligatoire'}
-                </div>
-                <textarea
-                  placeholder="Saisir une remarque avant de continuer..."
-                  value={section.comment}
-                  onChange={e => setComment(sIdx, e.target.value)}
-                  rows={2}
-                  style={{
-                    width: '100%', background: 'white',
-                    border: `1.5px solid ${section.comment.trim() ? 'var(--green)' : commentMissing ? 'var(--red)' : 'var(--gray-200)'}`,
-                    borderRadius: 'var(--radius-sm)', padding: '8px 12px',
-                    fontSize: 13, color: 'var(--gray-900)', resize: 'none', outline: 'none',
-                    fontFamily: 'var(--font-body)', lineHeight: 1.5
-                  }}
-                />
+      <div className="scroll-body" style={{ gap: 0, padding: 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {items.map((item, idx) => (
+            <div key={idx} style={{
+              padding: '13px 16px', display: 'flex', alignItems: 'center', gap: 12,
+              borderBottom: '1px solid var(--gray-100)',
+              background: item.status === 'ko' ? '#FFF8F8' : item.status === 'ok' ? '#F8FFF9' : 'white'
+            }}>
+              <span style={{ flex: 1, fontSize: 14, lineHeight: 1.4, color: 'var(--gray-900)' }}>{item.name}</span>
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                <button onClick={() => setItemStatus(idx, 'ok')} style={{
+                  width: 52, height: 40, borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none',
+                  background: item.status === 'ok' ? 'var(--green)' : 'var(--green-bg)',
+                  color: item.status === 'ok' ? 'white' : 'var(--green)',
+                  opacity: locked ? 0.6 : 1
+                }}>OK</button>
+                <button onClick={() => setItemStatus(idx, 'ko')} style={{
+                  width: 52, height: 40, borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none',
+                  background: item.status === 'ko' ? 'var(--red)' : 'var(--red-bg)',
+                  color: item.status === 'ko' ? 'white' : 'var(--red)',
+                  opacity: locked ? 0.6 : 1
+                }}>KO</button>
               </div>
             </div>
-          )
-        })}
+          ))}
+        </div>
 
-        {!canSave && (
-          <div style={{ background: 'var(--amber-bg)', border: '1px solid var(--orange-border)', borderRadius: 'var(--radius-md)', padding: '12px 16px', fontSize: 13, color: 'var(--amber)', textAlign: 'center' }}>
-            {!allItemsFilled
-              ? `${total - progress} point(s) non cochés`
-              : `${sections.filter(s => !s.comment.trim()).length} remarque(s) manquante(s)`}
+        <div style={{ padding: '16px', borderTop: '2px solid var(--gray-100)', background: 'var(--gray-50)' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: comment.trim() ? 'var(--green)' : 'var(--red)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            {comment.trim() ? '✓ Remarque renseignée' : '⚠ Remarque obligatoire'}
+          </div>
+          <textarea
+            placeholder="Saisir une remarque avant de valider..."
+            value={comment}
+            onChange={e => !locked && setComment(e.target.value)}
+            readOnly={locked}
+            rows={3}
+            style={{
+              width: '100%', background: locked ? 'var(--gray-100)' : 'white',
+              border: `1.5px solid ${comment.trim() ? 'var(--green)' : 'var(--gray-200)'}`,
+              borderRadius: 'var(--radius-md)', padding: '10px 14px',
+              fontSize: 14, color: 'var(--gray-900)', resize: 'none', outline: 'none',
+              fontFamily: 'var(--font-body)', lineHeight: 1.5
+            }}
+          />
+        </div>
+
+        {!locked && (
+          <div style={{ padding: '0 16px 32px' }}>
+            <button className="btn-primary" onClick={handleSave} disabled={!canSave || saving}
+              style={{ opacity: canSave ? 1 : 0.4 }}>
+              {saving ? 'Enregistrement...' : (
+                <><i className="ti ti-device-floppy" style={{ marginRight: 8, fontSize: 18, verticalAlign: '-3px' }} />
+                  {existing ? 'Mettre à jour' : 'Valider cette section'}</>
+              )}
+            </button>
           </div>
         )}
-
-        <button className="btn-primary" onClick={handleSave} disabled={!canSave || saving}
-          style={{ opacity: canSave ? 1 : 0.4, marginTop: 4, marginBottom: 20 }}>
-          {saving ? 'Enregistrement...' : (
-            <><i className="ti ti-device-floppy" style={{ marginRight: 8, fontSize: 18, verticalAlign: '-3px' }} />Enregistrer la vérification</>
-          )}
-        </button>
       </div>
     </div>
   )
