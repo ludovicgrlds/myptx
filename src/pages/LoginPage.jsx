@@ -87,7 +87,7 @@ export default function LoginPage({ onLogin }) {
             <input
               className="input-field"
               type="email"
-              placeholder="prenom.nom@sdis30.fr"
+              placeholder="prenom.nom@sdis40.fr"
               value={email}
               onChange={e => setEmail(e.target.value)}
               autoComplete="email"
